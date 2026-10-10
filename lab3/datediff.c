@@ -83,15 +83,15 @@ int main(int argc, char **argv)
     }
 
     time_t difference = labs(req_timestamp - cur_timestamp);
-    bool in_the_past = req_timestamp <= cur_timestamp;
     str_t time_fmtted = format_timespan(difference);
+    bool in_the_past = req_timestamp <= cur_timestamp;
 
     printf(
         "Current timestamp: "ANSI_BRCYN("%ld")"\n"
         "   Your timestamp: "ANSI_BRCYN("%ld")"\n"
         "Your date (midnight) %s "ANSI_BRCYN("%s")" "ANSI_BRBLK("(%ld sec%s)")" %s.\n",
-        req_timestamp,
         cur_timestamp,
+        req_timestamp,
         in_the_past ? "was" : "is",
         time_fmtted.str,
         difference,
