@@ -1,4 +1,8 @@
-/* gcc -std=c11 -Wall -Wextra -pedantic ./lab3time.c ./str.c -o lab3 */
+/*
+ * Build with:
+ *
+ * gcc -std=c11 -pedantic -Wall -Wextra ./datediff.c ../mattstr.c -o ./datediff
+ */
 
 #define _POSIX_C_SOURCE 200112L // Needed for setenv to exist inside stdlib.h
 #include <stdio.h>   // printf, etc.
@@ -11,22 +15,13 @@
 #include <libgen.h>  // basename()
 #include <string.h>  // strcmp
 
-#include "str.h"
-#include "ansi.h"
+#include "../mattlib.h"
+#include "../mattstr.h"
 
 // Sometimes, I wanna treat my bools like ints and do bit-shifts on them...
 #pragma GCC diagnostic ignored "-Wint-in-bool-context"
 
 #define SINGPLUR(x) (x == 1 ? "" : "s")
-
-/// Return code for functions that can fail.
-///
-/// `ERR` is defined to be 1 so that erroneous conditions can be checked
-/// in an if-statement.
-typedef enum result {
-    OK = 0,
-    ERR = 1,
-} result_t;
 
 typedef struct arg_error {
     str_t msg;  /// The actual error message.

@@ -1,5 +1,32 @@
-#ifndef MATTANSI
-#define MATTANSI
+/* ====================================================================
+ * General purpose helpers and constants.
+ * ================================================================= */
+
+#ifndef MATTLIB
+#define MATTLIB
+
+#include <stdint.h>
+
+typedef int8_t  i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+/// Return code for functions that can fail.
+///
+/// `ERR` is defined to be 1 so that erroneous conditions can be checked
+/// in an if-statement.
+typedef enum result {
+    OK = 0,
+    ERR = 1,
+} result_t;
+
+/* ----- ANSI Colour Escape Codes ----- */
 
 #define ANSI_BLK(s) "\x1b[30m" s "\x1b[0m"
 #define ANSI_RED(s) "\x1b[31m" s "\x1b[0m"
@@ -20,4 +47,3 @@
 #define ANSI_BRWHT(s) "\x1b[97m" s "\x1b[0m"
 
 #endif
-
