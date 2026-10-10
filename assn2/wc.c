@@ -17,6 +17,11 @@ typedef struct args {
     bool count_chars;   /// -m/--chars flag
     bool count_words;   /// -w/--words flag
     bool count_lines;   /// -l/--lines flag
+    
+    /// `true` if at least 1 positional argument appeared. Lets us determine
+    /// if we need to read from `stdin` or not.
+    bool files_specified;
+
     /// VLA with the length of `argc - 1` (initialized in main) that, after
     /// parsing, denotes what each of the arguments in `argv` are. Used to
     /// filter CLI flags out of the list of
@@ -31,18 +36,28 @@ typedef struct args {
 result_t parse_args(int argc, const char **argv, args_t *args, str_t *err);
 
 
+/// The "main" function that actually runs the guts of the program.
+///
+/// Returns `ERR` if running fails for some reason, and sets `err`.
+result_t run(int argc, const char **argv, const args_t args, str_t *err);
+
+
 int main(int argc, char **argv)
 {
-    str_t arg_err = {0};
+    // Skip first arg. We don't need it here.
+    // (when we implement --help, we may decide we want progname, tho)
+    argv++; argc--;
+    
+    str_t err = {0};
     args_t args = {0};
-    arg_type_t arg_lut[argc - 1];
-
+    arg_type_t arg_lut[argc];
+    
     args.arg_lut = (arg_type_t*)arg_lut;
     
-    if (ERR == parse_args(argc, (const char**)argv, &args, &arg_err))
+    if (ERR == parse_args(argc, (const char**)argv, &args, &err))
     {
-        printf(ANSI_RED("Error")": %s\n", arg_err.str);
-        strfree(&arg_err);
+        printf(ANSI_RED("Error")": %s\n", err.str);
+        strfree(&err);
         return EXIT_FAILURE;
     }
     
@@ -51,34 +66,25 @@ int main(int argc, char **argv)
         printf("TODO: help message\n");
         return EXIT_SUCCESS;
     }
-    
-    printf(
-        "Args: %s-c %s-w %s-m %s-l\x1b[0m\n",
-        args.count_bytes ? "\x1b[97m" : "\x1b[90m",
-        args.count_words ? "\x1b[97m" : "\x1b[90m",
-        args.count_chars ? "\x1b[97m" : "\x1b[90m",
-        args.count_lines ? "\x1b[97m" : "\x1b[90m"
-    );
-    
-    printf("List of files:\n");
-    for (int i = 0; i < argc - 1; i++)
+
+    if (ERR == run(argc, (const char**)argv, args, &err))
     {
-        if (args.arg_lut[i] == ARG_PATH)
-        {
-            printf("* "ANSI_BRCYN("%s")"\n", argv[1 + i]);
-        }
-    }
+        printf(ANSI_RED("Error")": %s\n", err.str);
+        strfree(&err);
+        return EXIT_FAILURE;
+    }    
 
     return EXIT_SUCCESS;
 }
+
 
 result_t parse_args(int argc, const char **argv, args_t *args, str_t *err)
 {
     bool dbl_dash = false;        // Seen '--' at some point?
 
-    for (int optind = 0; optind < argc - 1; optind++)
+    for (int optind = 0; optind < argc; optind++)
     {
-        const char *arg = argv[1 + optind];
+        const char *arg = argv[optind];
         size_t arg_len = strlen(arg);
         
         if (arg[0] == '-' && !dbl_dash)
@@ -157,8 +163,41 @@ result_t parse_args(int argc, const char **argv, args_t *args, str_t *err)
         {
             // Plain filepath.
             args->arg_lut[optind] = ARG_PATH;
+            args->files_specified = true;
         }
     }
     
+    return OK;
+}
+
+
+result_t run(int argc, const char **argv, const args_t args, str_t *err)
+{
+    printf(
+        "Flags: %s-c %s-w %s-m %s-l\x1b[0m\n",
+        args.count_bytes ? "\x1b[97m" : "\x1b[90m",
+        args.count_words ? "\x1b[97m" : "\x1b[90m",
+        args.count_chars ? "\x1b[97m" : "\x1b[90m",
+        args.count_lines ? "\x1b[97m" : "\x1b[90m"
+    );
+    
+    printf("List of files:\n");
+    
+    if (!args.files_specified)
+    {
+        printf("* "ANSI_BRCYN("(stdin)")"\n");
+    }
+    else
+    {
+        for (int i = 0; i < argc; i++) {
+            if (args.arg_lut[i] == ARG_PATH) {
+                printf(
+                    "* "ANSI_BRCYN("%s")"\n",
+                    (0 == strcmp(argv[i], "-")) ? "(stdin)" : argv[i]
+                );
+            }
+        }
+    }
+
     return OK;
 }
