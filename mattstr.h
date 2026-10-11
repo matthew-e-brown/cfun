@@ -1,10 +1,7 @@
 #ifndef MATTSTR
 #define MATTSTR
 
-#include <stdio.h>  // vsnprintf
-#include <stdarg.h> // va_list
-#include <stdlib.h> // malloc, calloc
-#include <string.h> // memcpy
+#include <stddef.h> // size_t
 
 /// A C-style string packaged alongside its length for convenience.
 ///

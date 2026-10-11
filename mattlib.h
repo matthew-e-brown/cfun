@@ -1,21 +1,15 @@
 /* ====================================================================
- * General purpose helpers and constants.
+ * General purpose constants and helpers.
  * ================================================================= */
 
 #ifndef MATTLIB
 #define MATTLIB
 
-#include <stdint.h>
+#include <stdlib.h>     // malloc, abort
+#include <string.h>     // memset
+#include <unistd.h>     // write
 
-typedef int8_t  i8;
-typedef int16_t i16;
-typedef int32_t i32;
-typedef int64_t i64;
-
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
+/* ----- Type definitions ----- */
 
 /// Return code for functions that can fail.
 ///
@@ -45,5 +39,44 @@ typedef enum result {
 #define ANSI_BRMAG(s) "\x1b[95m" s "\x1b[0m"
 #define ANSI_BRCYN(s) "\x1b[96m" s "\x1b[0m"
 #define ANSI_BRWHT(s) "\x1b[97m" s "\x1b[0m"
+
+/* ----- Helper functions ----- */
+
+/// Error message for `mattalloc()`.
+static const char _allocfail = ANSI_RED("Internal error")": memory allocation failed\n";
+
+/// Wrapper for memory allocation that handles failure.
+///
+/// Also, sets memory to zero after allocation.
+///
+/// Failure is handled in the most brutish way possible, but it is handled!
+/// That is... this simply prints (or attempts to print) a message to `stderr`
+/// and then aborts the process.
+static void *mattalloc(size_t amt);
+{
+    void *p = malloc(amt);
+
+    if (p == NULL)
+    {
+        write(STDERR_FILENO, _allocfail, sizeof(_allocfail));
+        abort();
+    }
+    
+    memset(p, 0, amt);
+    return p;
+}
+
+static void *mattrealloc(void *ptr, size_t newamt)
+{
+    ptr = realloc(ptr, newamt);
+    
+    if (ptr == NULL)
+    {
+        write(STDERR_FILENO, _allocfail, sizeof(_allocfail));
+        abort();
+    }
+    
+    return ptr;
+}
 
 #endif

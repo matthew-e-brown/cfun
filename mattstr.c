@@ -1,4 +1,10 @@
-#include "mattstr.h"
+#include <stdlib.h>  // NULL, etc.
+#include <stdio.h>   // vsnprintf
+#include <stdarg.h>  // va_list stuff
+#include <string.h>  // memcpy, memset, strlen, etc
+
+#include "mattlib.h" // mattalloc, mattrealloc
+#include "mattstr.h" // self
 
 str_t strempty()
 {
@@ -7,7 +13,7 @@ str_t strempty()
 
 str_t strnew(size_t cap)
 {
-    char *buf = calloc(cap + 1, 1);
+    char *buf = mattalloc(cap + 1);
     return (str_t){ .str = buf, .len = 0, .cap = cap };
 }
 
@@ -21,7 +27,7 @@ void strreserve(str_t *str, size_t n)
         size_t newcap = (n > str->cap)
             ? str->len + n
             : str->cap * 2;
-        str->str = realloc(str->str, newcap + 1);
+        str->str = mattrealloc(str->str, newcap + 1);
         str->cap = newcap;
     }
 }
@@ -64,7 +70,7 @@ str_t strfstr(const char *restrict fmt, ...)
     // Now do the whole thing again after allocating a buffer. NB: it is
     // totally safe to re-use the same `va_list` as long as you va_end
     // it first: https://stackoverflow.com/a/41411702/10549827
-    buf = calloc(len + 1, 1);
+    buf = mattalloc(len + 1);
     va_start(args, fmt);
     vsnprintf(buf, len + 1, fmt, args);
     va_end(args);
@@ -130,7 +136,7 @@ void strfree(str_t *str)
     va_end(args);
     
     // `total` does not include NUL byte
-    char *buf = calloc(total + 1, 1);
+    char *buf = mattalloc(total + 1);
     
     offset = 0;
     va_start(args, count);
