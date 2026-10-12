@@ -1,7 +1,8 @@
 #ifndef MATT_BREAKS
 #define MATT_BREAKS
 
-#include <stdint.h> // uint32_t
+#include <stdint.h>     // uint32_t
+#include <stdbool.h>    // bools
 
 /// State for determining whether a codepoint in a stream of Unicode text is a
 /// word-break.

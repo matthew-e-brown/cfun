@@ -3,6 +3,7 @@
 
 #include <stddef.h>     // size_t
 #include <stdint.h>     // uint_least8_t
+#include <stdbool.h>    // bools
 
 /// A reader that buffers reading from a file descriptor.
 typedef struct rdr {
@@ -15,18 +16,18 @@ typedef struct rdr {
     /// reported as a successful read, returning the number of bytes that have
     /// already been copied to the output buffer. Then, the next read will
     /// report this error just like a call to `read`. 
-    int errno;
+    int prev_errno;
     
     /// Flags.
     uint_least8_t flags;
     
     /// The user-supplied buffer pointer and its length.
-    void *buffer;
+    unsigned char *buffer;
     size_t bufsize;
     
     /// We define `cur` to always be `<=` end.
-    void *cur; /// Where the next byte should be read from.
-    void *end; /// Pointer to just past the last byte in the buffer.
+    unsigned char *cur; /// Where the next byte should be read from.
+    unsigned char *end; /// Pointer to just past the last byte in the buffer.
 } rdr_t;
 
 

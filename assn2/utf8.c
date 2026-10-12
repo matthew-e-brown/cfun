@@ -1,4 +1,5 @@
-#include <stdint.h>
+#include <stddef.h> // size_t
+#include <stdint.h> // uint types
 
 #include "utf8.h"
 
@@ -68,7 +69,7 @@ utf8_decoder_t utf8dec_new()
 }
 
 
-utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, uint8_t b, uint32_t *cp)
+utf8dec_result_t utf8dec_decode_next(utf8_decoder_t *self, uint8_t b, uint32_t *cp)
 {    
     // Comma-separated expressions evaluate to their rightmost value.
     // Allows for making an assignment and specifying a return value at the same time.
@@ -202,7 +203,7 @@ utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, uint8_t b, uint32_t *cp
              * the first code-unit.
              */
             self->state = (uint8_t)UTF8_STATE_RESET;
-            return utf8dec_decode_next(self, c, cp);
+            return utf8dec_decode_next(self, b, cp);
     }
     
     #undef SUCCESS
@@ -212,12 +213,12 @@ utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, uint8_t b, uint32_t *cp
 }
 
 
-size_t utf8dec_mb_cursize(utf8_decoder *self)
+size_t utf8dec_mb_cursize(utf8_decoder_t *self)
 {
     return ((uint8_t)(self->state) & 0x0F);
 }
 
-size_t utf8dec_mb_endsize(utf8_decoder *self)
+size_t utf8dec_mb_endsize(utf8_decoder_t *self)
 {
     return ((uint8_t)(self->state) & 0xF0) >> 4;
 }

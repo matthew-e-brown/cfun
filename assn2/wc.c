@@ -270,24 +270,21 @@ result_t process_file(const char *path, stats_t *o_stats, str_t *err)
         fd = open(path, O_RDONLY);
         if (fd < 0)
         {
-            int open_errno = errno;
-            // These are from string.h: see strerror(3).
-            const char *errname = strerrorname_np(open_errno);
-            const char *errdesc = strerrordesc_np(open_errno);
-            *err = strfstr("failed to open %s: "ANSI_RED("%s")": %s", path, errname, errdesc);
+            char *errdesc = strerror(errno);
+            *err = strfstr("could not open: %s", errdesc);
             return ERR;
         }
     }
     
     // Now actually run the main counting algorithm.
-    if (ERR == count(fd, o_stats))
+    if (ERR == (status = count(fd, o_stats)))
     {
         // According to the errors listed in `read(2)`, these should be the only
         // two errors possible for our current situation, aside from EINTR
         // (which is handled by `fill_buff`).
         if      (errno == EISDIR) *err = strfstr("%s is a directory");
-        else if (errno == EIO)    *err = strfstr("failed to read %s: an I/O error occurred");
-        else                      *err = strfstr("failed to read %s: an unknown error occurred");
+        else if (errno == EIO)    *err = strfstr("failed to read: an I/O error occurred");
+        else                      *err = strfstr("failed to read: an unknown error occurred");
     }
     
     // Cleanup the FD before leaving.
@@ -310,15 +307,15 @@ result_t process_file(const char *path, stats_t *o_stats, str_t *err)
          * the error message onto the end of the last one (if there is one).
          */
         int close_errno = errno;
-        const char *errname = strerrorname_np(close_errno);
-        const char *errdesc = strerrordesc_np(close_errno);
+        char *errdesc = strerror(close_errno);
         // Check if we already have an error from a failed read and push onto
         // that. If not, this is fresh error.
         if (status == ERR) {
-            strpushstrf(err, ". failed to close: "ANSI_RED("%s")": %s", errname, errdesc);
+            strpushstrf(err, ". failed to close: %s", errdesc);
         } else {
-            *err = strfstr("failed to close %s: "ANSI_RED("%s")": %s", path, errname, errdesc);
+            *err = strfstr("failed to close: %s", errdesc);
         }
+        status = ERR;
     }
     
     return status;
@@ -338,7 +335,12 @@ result_t process_file(const char *path, stats_t *o_stats, str_t *err)
 /// would be a bit much; but Google's AI Overview assures me that 16K should be
 /// fine (https://share.google/aimode/09uATU7wfL0MJicpl).
 static const size_t BUFSIZE = 16 * 1024;
-static_assert(BUFSIZE >= 1, "buffer size cannot be zero");
+
+// Expressions inside static asserts must be "constant." Sadly, since a
+// `static const` is not a *true* constant, we can't actually check it with
+// this. C23 fixes this by adding real `constexpr`; but in C11, I guess
+// `static_assert` is kinda JUST for macros? Lame. :/
+/* static_assert(BUFSIZE >= 1, "buffer size cannot be zero"); */
 
 
 result_t count(int fd, stats_t *o_stats)
@@ -437,3 +439,5 @@ retry_byte:
         return ERR;
     }
 }
+
+

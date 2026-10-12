@@ -42,6 +42,18 @@ typedef enum result {
 
 /* ----- Helper functions ----- */
 
+/*
+ * Since this file is included for things other than these functions, they may
+ * go unused. We don't want that to cause a warning in their compilation unit,
+ * so we'll disable the warning.
+ *
+ * Really, these should probably go into an actual .c file, but I'm too lazy to
+ * link yet another thing on the command line! Once I've pulled it into its own
+ * subfolder and give it its own Makefile, sure...
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+
 /// Error message for `mattalloc()`.
 static const char _allocfail[] = ANSI_RED("Internal error")": memory allocation failed\n";
 
@@ -78,5 +90,7 @@ static void *mattrealloc(void *ptr, size_t newamt)
     
     return ptr;
 }
+
+#pragma GCC diagnostic pop
 
 #endif

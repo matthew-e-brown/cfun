@@ -1,6 +1,7 @@
-#include <stdint.h> // uint32_t
+#include <stdint.h>     // uint32_t
+#include <stdbool.h>    // bools
 
-#include "breaks.h" // this
+#include "breaks.h"     // this
 
 /// Returns `true` if the given codepoint is a whitespace character, according
 /// to the `White_Space` property in [PropList.txt].
