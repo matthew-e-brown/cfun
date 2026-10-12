@@ -10,6 +10,9 @@
 
 #include "../mattlib.h" // result_t; ANSI colour-codes
 #include "../mattstr.h" // str_t and methods; mostly used for error reporting
+#include "../mattrdr.h" // rdr_t and methods for bufferred file-reading
+
+#include "utf8.h"       // UTF-8 decoder state machine
 
 
 /// Statistics gathered while reading a file.
@@ -68,10 +71,11 @@ result_t process_file(const char *path, stats_t *stats, str_t *err);
 
 /// Runs the main counting process on the opened file descriptor.
 ///
-/// If an error occurrs, `*err` is set to an error message and `ERR` is
-/// returned; `*stats` will not be modified in this case. Otherwise, `OK` is
-/// returned and `*err` is not modified.
-result_t count(int fd, stats_t *stats, str_t *err);
+/// Errors are reported to the caller by returning `ERR`. Specific error details
+/// are forwarded directly from the underlying calls to `read(2)` using `errno`.
+///
+/// In the event of an error, `*stats` is not modified.
+result_t count(int fd, stats_t *stats);
 
 
 int main(int argc, char **argv)
@@ -268,7 +272,7 @@ result_t process_file(const char *path, stats_t *o_stats, str_t *err)
     }
     
     // Now actually run the main counting algorithm.
-    if (ERR == count(fd, o_stats, err))
+    if (ERR == count(fd, o_stats))
     {
         // According to the errors listed in `read(2)`, these should be the only
         // two errors possible for our current situation, aside from EINTR
@@ -332,131 +336,66 @@ static const size_t BUFSIZE = 16 * 1024;
 static_assert(BUFSIZE >= 4, "UTF-8 buffer must be >= 4 bytes in size.");
 
 
-/// Fills a `buffer` of `BUFSIZE` and handles errors.
-static inline ssize_t fill_buffer(int fd, char *buffer)
-{
-retry:
-    ssize_t n = read(fd, buffer, BUFSIZE);
-    if (n < 0 && errno == EINTR)
-        goto retry; // Interrupted by signal. Try again.
-    // Otherwise, return `n` and let the caller deal with errno.
-    return n;
-}
-
-static result_t get_codepoint(const char *buffer, ssize_t *i, uint32_t *codepoint)
-{
-    uint8_t c1 = (unsigned)buffer[*i];
-    uint8_t c2 = (unsigned)buffer[*i + 1];
-    uint8_t c3 = (unsigned)buffer[*i + 2];
-    uint8_t c4 = (unsigned)buffer[*i + 3];
+result_t count(int fd, stats_t *o_stats)
+{    
+    /*
+     * Reading from the file is buffered by a `rdr_t`. We use a stack-local
+     * buffer for its internal storage-space, so we don't have to heap allocate
+     * anything.
+     *
+     * Using a buffer lets us read byte-by-byte to decode UTF-8 without taking
+     * a hit on performance by making a whole `read(2)` syscall for every byte.
+     */
+    char read_buf[BUFSIZE];
+    rdr_t reader = rdr_new(fd, read_buf, BUFSIZE);
     
-    /// Checks if the given byte is a UTF-8 continuation byte.
-    /// (starts with 0b10______).
-    #define IS_CONT(u) (((u) & 0xC0 ) == 0x80)
-
-    // Max codepoint: 0x10FFFF = 0b00010000'11111111'11111111.
-    //
-    // ```
-    // if      ((c & 0x80 /* 0b1'0000000 */) == 0x00 /* 0b0'0000000 */) ; // 1-byte
-    // else if ((c & 0xE0 /* 0b111'00000 */) == 0xC0 /* 0b110'00000 */) ; // 2-byte
-    // else if ((c & 0xF0 /* 0b1111'0000 */) == 0xD0 /* 0b1110'0000 */) ; // 3-byte
-    // else if ((c & 0xF8 /* 0b11111'000 */) == 0xF0 /* 0b11110'000 */) ; // 4-byte
-    // ```
+    /*
+     * `utf8_decoder_t` is a state machine that handles incoming single- and
+     * multi-byte sequences of UTF-8 code units.
+     */
+    utf8_decoder_t decoder = utf8dec_new();
     
-    // 1-unit codepoint (0xxxxxxx).
-    if ((c1 & 0x80) == 0x00) 
-        *i += 1;
-        *codepoint = c1 & 0x7F;
-        return OK;
-    }
+    char c;                 // Most recently read byte.
+    uint32_t cp;            // Latest decoded codepoint.
+    stats_t stats = {0};    // Local copy of output, reduce indirection
+    ssize_t nread = 0;      // Return value from calls to `read`
     
-    // 2-unit codepoint (110xxxxx 10xxxxxx).
-    else if ((c & 0xE0) == 0xC0) {
-        *i += 2;
-        
-        // 2nd byte must start with 0b10______.
-        if (!IS_CONT(c2))
-            goto err;
-        
-        *codepoint =
-            ((c1 & 0x1F) << 6) |
-            (c2 & 0x3F);
-        
-        return OK;
-    }
-    
-    // 3-unit codepoint (1110xxxx 10xxxxxx 10xxxxxx).
-    else if ((c & 0xF0) == 0xD0) {
-        *i += 3;
-        
-        // Next 2 bytes must start with 0b10______.
-        if (!IS_CONT(c2) || !IS_CONT(c3))
-            goto err;
-        
-        *codepoint =
-            ((c1 & 0x0F) << 12) |
-            ((c2 & 0x3F) << 6) |
-            (c3 & 0x3F);
-        
-        return OK;
-    }
-    
-    // 4-unit codepoint (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx).
-    else if ((c & 0xF8) == 0XF0) {
-        *i += 4;
-        
-        // Only valid if next 3 bytes start with 0b10______.
-        if (!IS_CONT(c2) || !IS_CONT(c3) || !IS_CONT(c4))
-            goto ERR;
-            
-        *codepoint =
-            ((c1 & 0x07) << 18) |
-            ((c2 & 0x3F) << 12) |
-            ((c3 & 0x3F) << 6) |
-            (c4 & 0x3F);
-        
-        return OK;
-    }
-    
-    #undef IS_CONT
-    
-    // Else, we have an invalid leading byte.
-err:
-    *codepoint = 0x00FFFD; // U+FFFD Replacement Character
-    return ERR;
-}
-
-
-result_t count(int fd, stats_t *o_stats, str_t *err)
-{
-    stats_t stats = {0}; // Local copy to reduce pointer indirection.
-    ssize_t nread = 0;   // Number of bytes read by each syscall.
-    ssize_t bufpos = 0;  // How many bytes we have read from our buffer.
-    
-    while (true)
+    while ((nread = rdr_read(&reader, &c, 1)) > 0)
     {
-        // If we're within 4 bytes of the end of the buffer, refill it. By
-        // looking 4 bytes ahead, we ensure that we never have a situation
-        // where a codepoint is split across the boundary of two buffer reads.
-        // Makes the code simpler.
-        if (bufpos + 4 > BUFSIZE)
-        {
-            if ((nread = fill_buffer(fd, buffer)) <= 0)
-                break;
-            bufpos = 0;
-            stats.num_bytes += (uintmax_t)(nread);
-        }
-        
-        // Now we can read the next 4 bytes and extract a codepoint.
-        uint32_t codepoint = 0x000000;
-        if (ERR = get_codepoint(buffer, &bufpos, &codepoint)) {
-            // Simply ignore invalid codepoints.
-            continue;
-        }
-        
-        // Handle the codepoint!
-        // [TODO]
+retry_char:
+            switch (utf8dec_decode_next(&decoder, c, &cp))
+            {
+                /*
+                 * Character decoded.
+                 */
+                case UTF8_DEC_CODEPOINT:
+                    break;
+                
+                /*
+                 * Read the next character and decode it.
+                 */
+                case UTF8_DEC_PENDING:
+                    continue;
+                
+                /*
+                 * This character is not a valid leading code unit.
+                 */
+                // [TODO] Separate return codes for invalid code units
+                //        vs. unexpected continuation characters.
+                //        Maybe called `BADCONT` and `BADUNIT`? idk yet.
+                case UTF8_DEC_INVALID:
+                    // [TODO]
+                    break;
+                
+                case UTF8_DEC_MBFAIL:
+                    /*
+                     * This character
+                     */
+                    goto retry_char;
+            }
     }
+    
+    rdr_free(&reader);
     
     // Did we break out of the loop successfully, or because of an error?
     if (nread == 0) {
