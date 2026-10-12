@@ -7,27 +7,17 @@
 
 /// Return-codes for a single step of a UTF-8 decoder.
 typedef enum utf8dec_result {
-    /// The most recently pushed byte...
-    UTF8_DEC_CODEPOINT = 0, /// ...yielded a complete codepoint.
-    UTF8_DEC_PENDING,       /// ...did not complete a codepoint.
-    UTF8_DEC_INVALID,       /// ...was not a valid UTF-8 code-unit.
-    UTF8_DEC_MBFAIL,        /// ...invalidated a pending multibyte sequence.
+    /// The most recently pushed byte:
+    UTF8_DEC_CODEPOINT = 0, /// Completed a codepoint.
+    UTF8_DEC_PENDING,       /// Started or continued a multibyte sequence.
+    UTF8_DEC_INVALID,       /// Was not a valid leading UTF-8 code-unit.
+    UTF8_DEC_MBFAIL,        /// Invalidated a pending multibyte sequence (but was not itself invalid).
 } utf8dec_result_t;
 
-/// UTF-8 decoder's internal state.
-typedef enum utf8dec_state {
-    UTF8_STATE_RESET = 0,   // Waiting for first code-unit.
-    UTF8_STATE_TWO_1,       // Seen first unit of a 2-unit codepoint.
-    UTF8_STATE_THREE_1,     // Seen first unit of a 3-unit codepoint.
-    UTF8_STATE_THREE_2,     // Seen first two units of a 3-unit codepoint.
-    UTF8_STATE_FOUR_1,      // Seen first unit of a 4-unit codepoint.
-    UTF8_STATE_FOUR_2,      // Seen first two units of a 4-unit codepoint.
-    UTF8_STATE_FOUR_3,      // Seen first three units of a 4-unit codepoint.
-} utf8dec_state_t;
-
+/// The UTF-8 decoder state machine.
 typedef struct utf8_decoder {
-    /// Decoder's internal state.
-    utf8dec_state_t state;
+    /// Decoder's current state.
+    uint8_t state;
     
     /// History of bytes.
     uint8_t history[3];
@@ -35,7 +25,11 @@ typedef struct utf8_decoder {
 
 
 /// Creates a new UTF-8 decoder.
+///
+/// The decoder's stack footprint is very small (4 bytes total) and requires no
+/// cleanup when finished.
 utf8_decoder_t utf8dec_new();
+
 
 /// Steps a decoder's state machine by pushing the next byte, `c`.
 ///
@@ -44,8 +38,8 @@ utf8_decoder_t utf8dec_new();
 /// UTF8_DEC_CODEPOINT
 ///
 ///     `c` was the last byte needed to complete a codepoint.
-///     If non-NULL, `*cp` is set to the UTF-32 value of the codepoint
-///     (`U+ABCD` = 0xABCD).
+///     If `*cp` is non-NULL, it is set to the UTF-32 value of the codepoint
+///     (i.e., `U+ABCDEF` = 0xABCDEF).
 ///
 /// UTF8_DEC_PENDING
 ///
@@ -54,8 +48,10 @@ utf8_decoder_t utf8dec_new();
 ///
 /// UTF8_DEC_INVALID
 ///
-///     `c` is not a valid UTF-8 code unit.
-///     If non-NULL, `*cp` is set to `U+FFFD` "Replacement Character".
+///     `c` is not a valid UTF-8 lading code-unit. This includes code-units
+///     which are valid continuation bytes but do not appear inside of a valid
+///     multi-unit sequence.
+///     If `*cp` is non-NULL, it is set to `U+FFFD` "Replacement Character".
 ///
 /// UTF8_DEC_MBFAIL
 ///
@@ -65,7 +61,45 @@ utf8_decoder_t utf8dec_new();
 ///     with `c` again to properly process it.
 ///
 ///     In this case, `*cp` is set to `U+FFFD` "Replacement Character".
-utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, char c, uint32_t *cp);
+utf8dec_result_t utf8dec_decode_next(utf8_decoder_t *self, uint8_t c, uint32_t *cp);
+
+
+/// Returns the number of bytes read for a decoder's currently-pending
+/// multi-byte sequence.
+///
+/// If the decoder does not have a pending multi-byte sequence (i.e., it is
+/// between codepoints), 0 is returned.
+///
+/// Since a UTF-8 code-unit sequence will never exceed four bytes in size, this
+/// function can only ever return values between 0 and 3 inclusive.
+///
+/// Subtracting this function's return value from the input stream's current
+/// position will give the start of the currently in-progress codepoint. This
+/// can be followed by `utf8dec_mb_endsize()` to determine what size of
+/// multi-unit codepoint was expected.
+///
+/// This function can be used to detect errors at the end of a UTF-8 stream.
+/// If it returns 0 at the end of a stream, then the last byte in the sequence
+/// successfully yielded a codepoint. Otherwise, the last `n` bytes did not
+/// yet participate in a well-formed code-unit sequence.
+size_t utf8dec_mb_cursize(utf8_decoder_t *self);
+
+
+/// Returns the expected size of a decoder's currently-pending multi-byte
+/// sequence.
+///
+/// That is, if the decoder is currently partway through decoding a 2-byte
+/// codepoint, this function returns 2; if it is partway through a 3-byte
+/// sequence, 3 is returned; if it is partway through a 4-byte sequence, 4 is
+/// returned.
+///
+/// If the decoder does not have a pending multi-byte sequence (i.e., it is
+/// between codepoints), 0 is returned.
+///
+/// Since there is no such thing as a multi-byte sequence of length 1 (the
+/// decoder can never be waiting for the "next" byte of a single-byte sequence),
+/// this function will only ever return the values 0, 2, 3, or 4.
+size_t utf8dec_mb_endsize(utf8_decoder_t *self);
 
 
 #endif

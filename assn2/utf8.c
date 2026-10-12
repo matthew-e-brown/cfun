@@ -34,6 +34,24 @@
 /// Checks if `b` is a continuation byte.
 #define IS_CONT(b) (((b) & 0xC0) == 0x80)
 
+/// Decoder's internal state.
+typedef enum state {
+    /*
+     * These values are selected such that the number of "seen" code-units is
+     * accessible directly by masking out the low nibble. Also, the high nibble
+     * contains the expected length of the current multi-byte sequence. These
+     * are made available to the user through the `mb_cursize` and `mb_endsize`
+     * methods.
+     */
+    UTF8_STATE_RESET    = 0,    /// Waiting for first code-unit.
+    UTF8_STATE_TWO_1    = 0x21, /// Two-unit sequence: seen one unit.
+    UTF8_STATE_THREE_1  = 0x31, /// Three-unit sequence: seen one unit.
+    UTF8_STATE_THREE_2  = 0x32, /// Three-unit sequence: seen two units.
+    UTF8_STATE_FOUR_1   = 0x41, /// Four-unit sequence: seen one unit.
+    UTF8_STATE_FOUR_2   = 0x42, /// Four-unit sequence: seen two units.
+    UTF8_STATE_FOUR_3   = 0x43, /// Four-unit sequence: seen three units.
+} state_t;
+
 /// `byte` is a lot easier to type than `uint8_t`.
 typedef uint8_t byte;
 
@@ -42,7 +60,7 @@ utf8_decoder_t utf8dec_new()
 {
     utf8_decoder_t dec =
     {
-        .state = UTF8_STATE_RESET,
+        .state = (uint8_t)(UTF8_STATE_RESET),
         .history = {0x00, 0x00, 0x00}
     };
     
@@ -50,18 +68,16 @@ utf8_decoder_t utf8dec_new()
 }
 
 
-utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, char c, uint32_t *cp)
-{
-    byte b = (byte)c;
-    
+utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, uint8_t b, uint32_t *cp)
+{    
     // Comma-separated expressions evaluate to their rightmost value.
     // Allows for making an assignment and specifying a return value at the same time.
-    #define SUCCESS()     (self->state = UTF8_STATE_RESET, UTF8_DEC_CODEPOINT)
-    #define INVALID()     (self->state = UTF8_STATE_RESET, UTF8_DEC_INVALID)
-    #define MBFAIL()      (self->state = UTF8_STATE_RESET, UTF8_DEC_MBFAIL)
-    #define PENDING(next) (self->state = UTF8_STATE_##next, UTF8_DEC_PENDING)
-    
-    switch (self->state)
+    #define SUCCESS()     (self->state = (uint8_t)UTF8_STATE_RESET, UTF8_DEC_CODEPOINT)
+    #define INVALID()     (self->state = (uint8_t)UTF8_STATE_RESET, UTF8_DEC_INVALID)
+    #define MBFAIL()      (self->state = (uint8_t)UTF8_STATE_RESET, UTF8_DEC_MBFAIL)
+    #define PENDING(next) (self->state = (uint8_t)UTF8_STATE_##next, UTF8_DEC_PENDING)
+
+    switch ((state_t)self->state)
     {
         case UTF8_STATE_RESET:
             if ((b & 0x80) == 0x00)         // 1-unit codepoint (0xxxxxxx).
@@ -131,7 +147,7 @@ utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, char c, uint32_t *cp)
                 return SUCCESS();
             }
             else
-            {        
+            {
                 return MBFAIL();
             }
             
@@ -181,7 +197,27 @@ utf8dec_result_t utf8dec_decode_next(utf8_decoder *self, char c, uint32_t *cp)
             /*
              * This branch should be unreachable... unless the caller has gone
              * mucking around with the decoder's state without permission >:(
+             *
+             * We'll just reset the state to its initial and retry as if this is
+             * the first code-unit.
              */
-            return (utf8dec_result_t)(0xFF);
+            self->state = (uint8_t)UTF8_STATE_RESET;
+            return utf8dec_decode_next(self, c, cp);
     }
+    
+    #undef SUCCESS
+    #undef INVALID
+    #undef MBFAIL
+    #undef PENDING
+}
+
+
+size_t utf8dec_mb_cursize(utf8_decoder *self)
+{
+    return ((uint8_t)(self->state) & 0x0F);
+}
+
+size_t utf8dec_mb_endsize(utf8_decoder *self)
+{
+    return ((uint8_t)(self->state) & 0xF0) >> 4;
 }

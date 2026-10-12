@@ -1,3 +1,9 @@
+/*
+ * Build with:
+ *
+ * gcc -std=c11 -pedantic -Wall -Wextra ./wc.c ./{utf8,breaks}.c ../{mattstr,mattrdr}.c -o wc
+ */
+
 #include <stdio.h>      // printf/fprintf
 #include <stdlib.h>     // EXIT_* codes; malloc + free
 #include <stdint.h>     // integer typedefs
@@ -7,12 +13,14 @@
 #include <fcntl.h>      // open()
 #include <unistd.h>     // read(), write(), close()
 #include <assert.h>     // static_assert() macro
+#include <errno.h>      // errno
 
 #include "../mattlib.h" // result_t; ANSI colour-codes
 #include "../mattstr.h" // str_t and methods; mostly used for error reporting
 #include "../mattrdr.h" // rdr_t and methods for bufferred file-reading
 
 #include "utf8.h"       // UTF-8 decoder state machine
+#include "breaks.h"     // Unicode word- and line-breaking algorithms
 
 
 /// Statistics gathered while reading a file.
@@ -92,7 +100,7 @@ int main(int argc, char **argv)
     args_t args = {0};
     str_t err = strempty();
 
-    if (ERR == parse_args(argc, (const char**)argv, &args, &err))
+    if (ERR == parse_args(argc, argv, &args, &err))
     {
         fprintf(stderr, ANSI_RED("Invalid arguments")": %s\n", err.str);
         exit_code = EX_USAGE;
@@ -330,14 +338,11 @@ result_t process_file(const char *path, stats_t *o_stats, str_t *err)
 /// would be a bit much; but Google's AI Overview assures me that 16K should be
 /// fine (https://share.google/aimode/09uATU7wfL0MJicpl).
 static const size_t BUFSIZE = 16 * 1024;
-
-/// Since we're using this bffer to decode UTF-8, we need enough to be able to
-/// read at least one code point at once.
-static_assert(BUFSIZE >= 4, "UTF-8 buffer must be >= 4 bytes in size.");
+static_assert(BUFSIZE >= 1, "buffer size cannot be zero");
 
 
 result_t count(int fd, stats_t *o_stats)
-{    
+{
     /*
      * Reading from the file is buffered by a `rdr_t`. We use a stack-local
      * buffer for its internal storage-space, so we don't have to heap allocate
@@ -346,7 +351,7 @@ result_t count(int fd, stats_t *o_stats)
      * Using a buffer lets us read byte-by-byte to decode UTF-8 without taking
      * a hit on performance by making a whole `read(2)` syscall for every byte.
      */
-    char read_buf[BUFSIZE];
+    uint8_t read_buf[BUFSIZE];
     rdr_t reader = rdr_new(fd, read_buf, BUFSIZE);
     
     /*
@@ -355,45 +360,72 @@ result_t count(int fd, stats_t *o_stats)
      */
     utf8_decoder_t decoder = utf8dec_new();
     
-    char c;                 // Most recently read byte.
+    /*
+     * Finally, we have yet two more state machines (albiet, *very* simple ones)
+     * for determining whether or not a given codepoint results in a word- or
+     * line-break.
+     */
+    wb_state_t wb = wb_new();
+    lb_state_t lb = lb_new();
+    
+    uint8_t c;              // Most recently read byte.
     uint32_t cp;            // Latest decoded codepoint.
     stats_t stats = {0};    // Local copy of output, reduce indirection
     ssize_t nread = 0;      // Return value from calls to `read`
     
     while ((nread = rdr_read(&reader, &c, 1)) > 0)
     {
-retry_char:
-            switch (utf8dec_decode_next(&decoder, c, &cp))
-            {
-                /*
-                 * Character decoded.
-                 */
-                case UTF8_DEC_CODEPOINT:
-                    break;
-                
-                /*
-                 * Read the next character and decode it.
-                 */
-                case UTF8_DEC_PENDING:
-                    continue;
-                
-                /*
-                 * This character is not a valid leading code unit.
-                 */
-                // [TODO] Separate return codes for invalid code units
-                //        vs. unexpected continuation characters.
-                //        Maybe called `BADCONT` and `BADUNIT`? idk yet.
-                case UTF8_DEC_INVALID:
-                    // [TODO]
-                    break;
-                
-                case UTF8_DEC_MBFAIL:
-                    /*
-                     * This character
-                     */
-                    goto retry_char;
-            }
+        stats.num_bytes += 1;
+
+retry_byte:
+        switch (utf8dec_decode_next(&decoder, c, &cp))
+        {
+            /*
+             * Character decoded! Which character is it?
+             */
+            case UTF8_DEC_CODEPOINT:
+                // [TODO] Count extended grapheme clusters instead of (or,
+                // in addition to?) counting codepoints.
+                stats.num_chars += 1;
+                if (wb_check_next(&wb, cp)) stats.num_words += 1;
+                if (lb_check_next(&lb, cp)) stats.num_lines += 1;
+                break;
+            
+            /*
+             * Still waiting for the codepoint to finish. Skip to the next byte.
+             */
+            case UTF8_DEC_PENDING:
+                continue;
+            
+            /*
+             * This byte is not necessarily invalid... but the codepoint we
+             * were decoding did not complete properly.
+             */
+            case UTF8_DEC_MBFAIL:
+                goto retry_byte;
+            
+            /*
+             * This byte is either:
+             * (a) not a valid leading code unit, or
+             * (b) a continuation byte not part of a sequence.
+             */
+            case UTF8_DEC_INVALID:
+                // [TODO] ...what does this mean in terms of "counting" a
+                // file? Does this count as a "character"? Do we treat it like
+                // a word separator? UAX #29 and #14 may have notes about this.
+                //
+                // For now, we'll just skip it as if nothing happened.
+                break;
+        }
     }
+    
+    /*
+     * We want to detect when the final word ends, but we *don't* want to
+     * include the implicit newline at the end of a document in our count of
+     * lines.
+     */
+    if (wb_finish(&wb)) stats.num_words += 1;
+    /* if (lb_finish(&lb)) stats.num_lines += 1; */
     
     rdr_free(&reader);
     

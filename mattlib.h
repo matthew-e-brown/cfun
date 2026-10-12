@@ -43,7 +43,7 @@ typedef enum result {
 /* ----- Helper functions ----- */
 
 /// Error message for `mattalloc()`.
-static const char _allocfail = ANSI_RED("Internal error")": memory allocation failed\n";
+static const char _allocfail[] = ANSI_RED("Internal error")": memory allocation failed\n";
 
 /// Wrapper for memory allocation that handles failure.
 ///
@@ -52,7 +52,7 @@ static const char _allocfail = ANSI_RED("Internal error")": memory allocation fa
 /// Failure is handled in the most brutish way possible, but it is handled!
 /// That is... this simply prints (or attempts to print) a message to `stderr`
 /// and then aborts the process.
-static void *mattalloc(size_t amt);
+static void *mattalloc(size_t amt)
 {
     void *p = malloc(amt);
 
