@@ -71,19 +71,41 @@ typedef struct args {
 /// On success, `OK` is returned.
 result_t parse_args(int argc, char **argv, args_t *args, str_t *err);
 
-/// Opens the file given by `path` before forwarding to the main counting
-/// process. This function is mostly responsible for handling any errors.
+/// Small wrapper around `open(2)`.
 ///
-/// If `path` is NULL, input is read from stdin.
-result_t process_file(const char *path, stats_t *stats, str_t *err);
+/// Handles mapping a NULL path to stdin, and reports errors according to the
+/// same convention as the rest of the program.
+result_t try_open(const char *path, int *fd, str_t *err);
+
+/// Small wrapper around `close(2)`.
+///
+/// Avoids inadvertently closing stdin and handles error-message formatting the
+/// same way as the rest of the program.
+result_t try_close(int fd, str_t *err);
 
 /// Runs the main counting process on the opened file descriptor.
 ///
-/// Errors are reported to the caller by returning `ERR`. Specific error details
-/// are forwarded directly from the underlying calls to `read(2)` using `errno`.
-///
 /// In the event of an error, `*stats` is not modified.
-result_t count(int fd, stats_t *stats);
+result_t try_count(int fd, stats_t *out_stats, str_t *err);
+
+
+/// Prints counted statistics to stdout.
+void print_stats(stats_t stats, config_t config, const char *path)
+{
+    unsigned int n = 0; // Count how many prints we've done to know if we need a space.
+    if (config.print_bytes) fprintf(stdout, "%ju", stats.num_bytes), n++;
+    if (config.print_chars) fprintf(stdout, "%s%ju", n++ ? " " : "", stats.num_chars);
+    if (config.print_words) fprintf(stdout, "%s%ju", n++ ? " " : "", stats.num_words);
+    if (config.print_lines) fprintf(stdout, "%s%ju", n++ ? " " : "", stats.num_lines);
+    
+    if (n > 0 && path != NULL)
+        fprintf(stdout, " "ANSI_CYN("%s"), path);
+        
+    if (n > 0)
+        fprintf(stdout, "\n");
+    
+    fflush(stdout);
+}
 
 
 int main(int argc, char **argv)
@@ -113,31 +135,63 @@ int main(int argc, char **argv)
         goto done;
     }
     
-    // Onto the main program!
-    // ------------------------------------------
+    stats_t stats = {0};
+    stats_t totals = {0};
     
-    printf(
-        "Flags: %s-c %s-w %s-m %s-l\x1b[0m\n",
-        args.config.print_bytes ? "\x1b[97m" : "\x1b[90m",
-        args.config.print_words ? "\x1b[97m" : "\x1b[90m",
-        args.config.print_chars ? "\x1b[97m" : "\x1b[90m",
-        args.config.print_lines ? "\x1b[97m" : "\x1b[90m"
-    );
-    
-    printf("List of files:\n");
+    /*
+     * If no files were provided on the command-line, we just read from stdin.
+     *
+     * The only difference between specifying no args and specifying "-" on the
+     * command line is that, in the latter case, we want to print the filename
+     * (stdin) at the end of the line. This matches wc's behaviour with '-'.
+     */
     
     if (args.num_files == 0)
     {
-        printf("* "ANSI_BRCYN("(stdin)")"\n");
+        // stdin does not need to be opened or closed. This simplifies error-
+        // handling for this branch.
+        if (ERR == try_count(STDIN_FILENO, &stats, &err))
+        {
+            fprintf(stderr, "wc: %s\n", err.str);
+        }
+        else
+        {
+            print_stats(stats, args.config, NULL);
+        }
     }
     else
     {
         for (size_t i = 0; i < args.num_files; i++)
         {
-            char *file = args.files[i];
-            if (0 == strcmp(file, "-"))
-                file = "(stdin)";
-            printf("* "ANSI_BRCYN("%s")"\n", file);
+            int fd;
+            char *path = args.files[i];
+            char *pfmt = path == NULL ? "(stdin)" : path;
+            
+            if (ERR == try_open(path, &fd, &err)) {
+                fprintf(stderr, "wc: %s: %s\n", pfmt, err.str);
+                continue;
+            }
+            
+            if (ERR == try_count(fd, &stats, &err)) {
+                fprintf(stderr, "wc: %s: %s\n", pfmt, err.str);
+                continue;
+            }
+            
+            print_stats(stats, args.config, pfmt);
+            totals.num_bytes += stats.num_bytes;
+            totals.num_chars += stats.num_chars;
+            totals.num_words += stats.num_words;
+            totals.num_lines += stats.num_lines;
+            
+            if (ERR == try_close(fd, &err)) {
+                fprintf(stderr, "wc: %s: %s\n", pfmt, err.str);
+                continue;
+            }
+        }
+        
+        if (args.num_files > 1)
+        {
+            print_stats(totals, args.config, "Total");
         }
     }
 
@@ -150,9 +204,67 @@ done:
 }
 
 
+result_t try_open(const char *path, int *fd, str_t *err)
+{
+    result_t status = OK;
+    
+    if (path == NULL)
+    {
+        *fd = STDIN_FILENO;
+    }
+    else
+    {
+        if ((*fd = open(path, O_RDONLY)) < 0)
+        {
+            char *errdesc = strerror(errno);
+            *err = strfstr("failed to open: %s", errdesc);
+            status = ERR;
+        }
+    }
+    
+    return status;
+}
+
+result_t try_close(int fd, str_t *err)
+{
+    result_t status = OK;
+    
+    if (fd == STDIN_FILENO)
+    {
+        return OK;
+    }
+
+    if (close(fd) < 0 && errno != EINTR)
+    {
+        /*
+         * What do you even do when you fail to close a file? The man page for
+         * `close()` specifically says not to try closing it again, since Linux
+         * frees the descriptor very early in the function.
+         *
+         * Well, from `close(2)`:
+         *
+         *      Note, however, that a failure return should be used only for
+         *      diagnostic purposes (i.e., a warning to the application that
+         *      there may still be I/O pending or there may have been failed
+         *      I/O) or remedial purposes (e.g., writing the file once more or
+         *      creating a backup).
+         *
+         * So, we don't actually have any remedial action here. We'll just push
+         * the error message onto the end of the last one (if there is one).
+         */
+        char *errdesc = strerror(errno);
+        *err = strfstr("failed to close: %s", errdesc);
+        status = ERR;
+    }
+    
+    return status;
+}
+
+
 result_t parse_args(int argc, char **argv, args_t *args, str_t *err)
 {
-    bool dbl_dash = false;        // Seen '--' at some point?
+    bool dbl_dash = false;      // Seen '--' at some point?
+    unsigned int num_flags = 0; // Number of '-' flags passed.
     
     args->num_files = 0;
     args->files = mattalloc(argc * sizeof(char*));
@@ -171,13 +283,15 @@ result_t parse_args(int argc, char **argv, args_t *args, str_t *err)
 
         if (arg[0] == '-' && !dbl_dash)
         {
-            // Macro for setting a flag if it hasn't been set already,
-            // returning an error if it has.
-            #define SET_ONCE(lvalue, strname) \
+            // Sets a flag's the given flag's value to `true` in `args->config`
+            // (but only if it hasn't already been set) and increments
+            // `num_flags`.
+            #define SET_FLAG(field, strname) \
                 /* https://share.google/aimode/N0zgBCfzmZN5BiUL0 */ \
                 do { \
-                    if (!(lvalue)) { \
-                        (lvalue) = true; \
+                    if (!args->config.field) { \
+                        args->config.field = true; \
+                        num_flags += 1; \
                     } else { \
                         *err = strfstr("option " strname " specified more than once"); \
                         return ERR; \
@@ -209,10 +323,10 @@ result_t parse_args(int argc, char **argv, args_t *args, str_t *err)
                     args->help = true;
                     return OK;
                 }
-                else if (0 == strcmp(arg, "--bytes")) SET_ONCE(args->config.print_bytes, "-c/--bytes");
-                else if (0 == strcmp(arg, "--words")) SET_ONCE(args->config.print_words, "-w/--words");
-                else if (0 == strcmp(arg, "--chars")) SET_ONCE(args->config.print_chars, "-m/--chars");
-                else if (0 == strcmp(arg, "--lines")) SET_ONCE(args->config.print_lines, "-l/--lines");
+                else if (0 == strcmp(arg, "--bytes")) SET_FLAG(print_bytes, "-c/--bytes");
+                else if (0 == strcmp(arg, "--words")) SET_FLAG(print_words, "-w/--words");
+                else if (0 == strcmp(arg, "--chars")) SET_FLAG(print_chars, "-m/--chars");
+                else if (0 == strcmp(arg, "--lines")) SET_FLAG(print_lines, "-l/--lines");
                 else
                 {
                     *err = strfstr("unknown option %s", arg);
@@ -227,10 +341,10 @@ result_t parse_args(int argc, char **argv, args_t *args, str_t *err)
                 for (char *c = &arg[1]; *c != '\0'; ++c)
                 {
                     switch (*c) {
-                        case 'c': SET_ONCE(args->config.print_bytes, "-c/--bytes"); break;
-                        case 'w': SET_ONCE(args->config.print_words, "-w/--words"); break;
-                        case 'm': SET_ONCE(args->config.print_chars, "-m/--chars"); break;
-                        case 'l': SET_ONCE(args->config.print_lines, "-l/--lines"); break;
+                        case 'c': SET_FLAG(print_bytes, "-c/--bytes"); break;
+                        case 'w': SET_FLAG(print_words, "-w/--words"); break;
+                        case 'm': SET_FLAG(print_chars, "-m/--chars"); break;
+                        case 'l': SET_FLAG(print_lines, "-l/--lines"); break;
                         case 'h':
                             args->help = true;
                             return OK;
@@ -241,7 +355,7 @@ result_t parse_args(int argc, char **argv, args_t *args, str_t *err)
                 }
             }
             
-            #undef SET_ONCE
+            #undef SET_FLAG
         }
         else
         {
@@ -250,75 +364,13 @@ result_t parse_args(int argc, char **argv, args_t *args, str_t *err)
         }
     }
     
+    // If no flags were passed, print all four fields.
+    if (num_flags == 0)
+    {
+        args->config = (config_t){true, true, true, true};
+    }
+    
     return OK;
-}
-
-
-result_t process_file(const char *path, stats_t *o_stats, str_t *err)
-{
-    int fd;
-    result_t status;
-    
-    // First, open the file. If the path is NULL, we want stdin.
-    if (path == NULL)
-    {
-        // stdin doesn't need to be opened; we can just read from it directly.
-        fd = STDIN_FILENO; // constant from unistd.h
-    }
-    else
-    {
-        fd = open(path, O_RDONLY);
-        if (fd < 0)
-        {
-            char *errdesc = strerror(errno);
-            *err = strfstr("could not open: %s", errdesc);
-            return ERR;
-        }
-    }
-    
-    // Now actually run the main counting algorithm.
-    if (ERR == (status = count(fd, o_stats)))
-    {
-        // According to the errors listed in `read(2)`, these should be the only
-        // two errors possible for our current situation, aside from EINTR
-        // (which is handled by `fill_buff`).
-        if      (errno == EISDIR) *err = strfstr("%s is a directory");
-        else if (errno == EIO)    *err = strfstr("failed to read: an I/O error occurred");
-        else                      *err = strfstr("failed to read: an unknown error occurred");
-    }
-    
-    // Cleanup the FD before leaving.
-    if (close(fd) < 0 && errno != EINTR)
-    {
-        /*
-         * What do you even do when you fail to close a file? The man page for
-         * `close()` specifically says not to try closing it again, since Linux
-         * frees the descriptor very early in the function.
-         *
-         * Well, from `close(2)`:
-         *
-         *      Note, however, that a failure return should be used only for
-         *      diagnostic purposes (i.e., a warning to the application that
-         *      there may still be I/O pending or there may have been failed
-         *      I/O) or remedial purposes (e.g., writing the file once more or
-         *      creating a backup).
-         *
-         * So, we don't actually have any remedial action here. We'll just push
-         * the error message onto the end of the last one (if there is one).
-         */
-        int close_errno = errno;
-        char *errdesc = strerror(close_errno);
-        // Check if we already have an error from a failed read and push onto
-        // that. If not, this is fresh error.
-        if (status == ERR) {
-            strpushstrf(err, ". failed to close: %s", errdesc);
-        } else {
-            *err = strfstr("failed to close: %s", errdesc);
-        }
-        status = ERR;
-    }
-    
-    return status;
 }
 
 
@@ -343,7 +395,7 @@ static const size_t BUFSIZE = 16 * 1024;
 /* static_assert(BUFSIZE >= 1, "buffer size cannot be zero"); */
 
 
-result_t count(int fd, stats_t *o_stats)
+result_t try_count(int fd, stats_t *out_stats, str_t *err)
 {
     /*
      * Reading from the file is buffered by a `rdr_t`. We use a stack-local
@@ -376,7 +428,7 @@ result_t count(int fd, stats_t *o_stats)
     ssize_t nread = 0;      // Return value from calls to `read`
     
     while ((nread = rdr_read(&reader, &c, 1)) > 0)
-    {
+    {    
         stats.num_bytes += 1;
 
 retry_byte:
@@ -421,23 +473,24 @@ retry_byte:
         }
     }
     
-    /*
-     * We want to detect when the final word ends, but we *don't* want to
-     * include the implicit newline at the end of a document in our count of
-     * lines.
-     */
+    // We want to count the end of the final word...
     if (wb_finish(&wb)) stats.num_words += 1;
+    // But we *don't* want to count the implicit newline at the end of the file.
     /* if (lb_finish(&lb)) stats.num_lines += 1; */
     
     rdr_free(&reader);
     
     // Did we break out of the loop successfully, or because of an error?
-    if (nread == 0) {
-        *o_stats = stats;
-        return OK;
-    } else {
+    if (nread < 0)
+    {
+        if      (errno == EIO)    *err = strfstr("failed to read: an I/O error occurred");
+        else if (errno == EISDIR) *err = strfstr("failed to read: file is a directory");
+        else                      *err = strfstr("failed to read: an unknown error occurred");
         return ERR;
     }
+    else
+    {
+        *out_stats = stats;
+        return OK;
+    }
 }
-
-
