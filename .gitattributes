@@ -1,0 +1,2 @@
+# Tell GitHub not to include this giant file in its linguist statistics
+assn2/gen/luts.h linguist-generated
