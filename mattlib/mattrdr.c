@@ -1,10 +1,12 @@
 #define _POSIX_C_SOURCE 200809L // Needed for SSIZE_MAX to exist in limits.h
 #include <stdlib.h>     // NULL
 #include <stddef.h>     // size_t
+#include <sys/types.h>  // ssize_t
 #include <string.h>     // memcpy()
 #include <stdbool.h>    // bools
 #include <errno.h>      // errno
 #include <limits.h>     // SSIZE_MAX
+#include <unistd.h>     // read
 
 #include "mattlib.h"    // mattalloc
 #include "mattrdr.h"    // this

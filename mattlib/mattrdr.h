@@ -4,6 +4,7 @@
 #include <stddef.h>     // size_t
 #include <stdint.h>     // uint_least8_t
 #include <stdbool.h>    // bools
+#include <sys/types.h>  // ssize_t
 
 /// A reader that buffers reading from a file descriptor.
 typedef struct rdr {

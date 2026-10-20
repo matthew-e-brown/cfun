@@ -15,9 +15,9 @@
 #include <assert.h>     // static_assert() macro
 #include <errno.h>      // errno
 
-#include "../mattlib.h" // result_t; ANSI colour-codes
-#include "../mattstr.h" // str_t and methods; mostly used for error reporting
-#include "../mattrdr.h" // rdr_t and methods for bufferred file-reading
+#include "mattlib.h" // result_t; ANSI colour-codes
+#include "mattstr.h" // str_t and methods; mostly used for error reporting
+#include "mattrdr.h" // rdr_t and methods for bufferred file-reading
 
 #include "utf8.h"       // UTF-8 decoder state machine
 #include "breaks.h"     // Unicode word- and line-breaking algorithms

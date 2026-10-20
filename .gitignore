@@ -1,2 +1,5 @@
 # Some folders I've been using to store old code that I don't wanna lose
 .unused*/
+
+# Build artifacts
+bin/

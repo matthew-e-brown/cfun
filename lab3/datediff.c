@@ -15,8 +15,8 @@
 #include <libgen.h>  // basename()
 #include <string.h>  // strcmp
 
-#include "../mattlib.h"
-#include "../mattstr.h"
+#include "mattlib.h"
+#include "mattstr.h"
 
 // Sometimes, I wanna treat my bools like ints and do bit-shifts on them...
 #pragma GCC diagnostic ignored "-Wint-in-bool-context"
