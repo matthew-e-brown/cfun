@@ -10,13 +10,80 @@ use File::Basename;
 use List::Util 'max';
 use Data::Dumper;
 
+# Set STDIN, STDOUT, and STDERR to UTF-8 encoding:
+use open qw(:std :utf8);
+
 my $this_pl = basename $0;
 
-my $re_properties = qr/^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*;\s*([A-Za-z_]+)/;
+
+# ============================================================================== 
+# Subroutines
+# ==============================================================================
 
 
-# Reads the lines in the given file and finds all property values for
-# all codepoints.
+# Converts a number into a hexadecimal string.
+#
+# This is the inverse of the builtin `hex` function.
+sub to_hex {
+    my $x = shift // return "";
+    return sprintf "%X", $x;
+}
+
+
+# Scans the given UCD data file (.txt) and calls the given callback
+# once for every line.
+#
+# The callback is passed three arguments:
+#
+#   $lo     = The start of the codepoint range for the line.
+#   $hi     = End of the range; equal to $lo for single CPs.
+#   $fields = Arrayref of semicolon-separated fields on the line.
+sub foreach_ucd_line {
+    my $file     = shift or die "Missing \$file argument";
+    my $callback = shift or die "Missing \$callback argument";
+    
+    open(my $fh, '<', $file) or die "Failed to open $file";
+    
+    while (<$fh>) {
+        chomp;
+        s/\s*#.*$//;        # Strip comments
+        next if /^\s*$/;    # Skip if line is empty
+        
+        # Pull codepoints from the front of the line
+        unless ( s/^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*// ) {
+            die "Missing codepoint range in $file";
+        }
+        
+        my $lo = hex($1);
+        my $hi = hex($2 // $1);
+        
+        # Remove single `;` between codepoints and remaining fields
+        s/^;\s*//;
+        
+        # Split the remaining fields based on semicolons
+        my @fields = split /\s*;\s*/;
+        
+        # Pass the codepoints and fields into the callback
+        $callback->($lo, $hi, \@fields);
+    }
+}
+
+
+# Reads properties from the given UCD file.
+#
+# Arguments:
+#
+# $1 = Path to UCD file.
+# $2 = Regex that matches the property name being looked for.
+#
+# When $2 is not provided, it is assumed that the file contains the
+# definitions for only a single property. In this case, the second field
+# in the file (right after the codepoint range) is interpreted as the
+# property's value.
+#
+# When $2 is a string or regex, it is matched against the second field
+# to filter lines to the desired property; the third field is then taken
+# as the property's value.
 #
 # Returns a nested hash of the form:
 #
@@ -24,9 +91,9 @@ my $re_properties = qr/^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*;\s*([A-Za-z_]+)/;
 #     val_names => [...] # List of property values found in the file
 #     cp_values => {...} # Maps codepoints to value indices
 # }
-sub read_break_props {
-    my $file = shift or die "Missing \$file argument";
-    open(my $fh, '<', $file) or die "Failed to open $file";
+sub read_prop_values {
+    my $file    = shift or die "Missing \$file argument";
+    my $filter  = shift;
     
     my @val_names;
     my %cp_values;
@@ -34,21 +101,15 @@ sub read_break_props {
     # Temporary; used to lookup value -> index until we're finished.
     my %val_index;
     
-    while (<$fh>) {
-        chomp;
-        next if /^#/ or /^\s*$/;
+    foreach_ucd_line $file, sub {
+        my ($lo, $hi, $fields) = @_;
         
-        unless ( m/$re_properties/ ) {
-            # We could just 'next unless /.../', but I want to make sure I
-            # don't miss any formatting details of these files... so we'll
-            # explicitly skip over the comments and blanks and then error
-            # on any lines formatted differently from how we expect.
-            die "Unknown line format in file $file: $_";
+        if ( defined($filter) ) {
+            my $pname = shift @$fields or die "Expected property name to filter";
+            return unless $pname eq $filter;
         }
         
-        my $lo = hex($1);
-        my $hi = hex($2 // $1);
-        my $value = $3;
+        my $value = shift @$fields or die "Expected property value";
         
         # Have we seen this value before?
         my $index = $val_index{$value};
@@ -60,10 +121,9 @@ sub read_break_props {
         
         # Now, for all codepoints in the range, insert this index.
         for my $cp ($lo .. $hi) {
-            my $cp_hex = sprintf "%X", $cp;
-            $cp_values{$cp_hex} = $index;
+            $cp_values{to_hex $cp} = $index;
         }
-    }
+    };
     
     return {
         val_names => \@val_names,
@@ -81,29 +141,19 @@ sub find_boolean_props {
     my $file = shift or die "Missing \$file argument";
     my $prop = shift or die "Missing \$prop argument";
     
-    open(my $fh, '<', $file) or die "Failed to open $file";
-    
     my %cp_values;
     
-    while (<$fh>) {
-        chomp;
-        next if /^#/ or /^\s*$/;
-        unless ( m/$re_properties/ ) {
-            die "Unknown line format in file $file: $_";
-        }
-        
-        my $lo = hex($1);
-        my $hi = hex($2 // $1);
-        my $value = $3;
+    foreach_ucd_line $file, sub {
+        my ($lo, $hi, $fields) = @_;
+        my $name = shift @$fields or die "Expected property name";
         
         # Is this the property we're looking for?
-        if ( $value eq $prop ) {
+        if ( $name eq $prop ) {
             for my $cp ($lo .. $hi) {
-                my $cp_hex = sprintf "%X", $cp;
-                $cp_values{$cp_hex} = 1;
+                $cp_values{to_hex $cp} = 1;
             }
         }
-    }
+    };
     
     return \%cp_values;
 }
@@ -228,41 +278,75 @@ sub generate_luts {
     };
 }
 
-# Prints a readout of how large a pair of LUTs from `generate_luts` is.
-sub measure_luts {
-    my $luts = shift or die "Missing \$luts argument";
-    
-    # NB: `@luts->{major}` doesn't work because the `->` operator has lower
-    # precedence than `@` (I though `->` would deref the `$luts` ref first,
-    # then `@` would give me an array). It ends up trying to treat `luts` as
-    # an array, and then dereference that. Instead we need to `$luts->{major}`
-    # to get out an array ref, then `@{$that_array_ref}` to actually get the
-    # array.
-    my $nmaj = scalar @{$luts->{major}}; # Should always be 0x1100 (0x0000 to 0x10FF)
-    my $nmin = scalar @{$luts->{minor}}; # Will vary in size
-    my $sum = $nmaj + $nmin;
-    
-    my $ratio = sprintf "%.2f", (0x110000 / $sum);
-    my $prcnt = sprintf "%.2f", ($sum / 0x110000) * 100;
-    
-    return "$nmaj + $nmin = $sum entries (compression ratio: ${ratio}; ${prcnt}%)";
-}
 
-# Gets the smallest C typename required to store the given value. Only supports
+# Gets the smallest bit width required to store the given value. Only supports
 # up to 64 bits because Perl got mad when I typed a `0xFFFFFFFF_FFFFFFFF` and I
 # couldn't be bothered to investigate bigger ints.
-sub get_ctype {
+sub get_bitwidth {
     my $n = shift or die "Missing \$n argument";
     if ( $n <= 0xFF ) {
-        return "uint8_t";
+        return 8;
     } elsif ( $n <= 0xFFFF ) {
-        return "uint16_t";
+        return 16;
     } elsif ( $n <= 0xFFFF_FFFF ) {
-        return "uint32_t";
+        return 32;
     } else {
-        return "uint64_t";
+        return 64;
     }
 }
+
+# Formats a number of bytes into a human-readable string.
+sub format_bytes {
+    my $bytes = shift // return '? B';
+    return '0 B' if $bytes == 0;
+    
+    my $base = 1024;
+    my @units = ('B', 'KiB', 'MiB', 'GiB');
+    my $i = 0;
+    while ( $bytes >= $base && $i < $#units ) {
+        $bytes /= $base;
+        $i++;
+    }
+    
+    return sprintf "%.2f %s", $bytes, $units[$i];
+}
+
+
+# Given a hashref to one of the major+minor LUT pairs, returns the total size
+# of the LUTs in bytes.
+#
+# Accepts an optional second scalar reference parameter as an accumulator for
+# the overall size of multiple LUTs.
+sub measure_luts {
+    my $luts = shift or die "Missing \$luts argument";
+    my $tref = shift;
+    
+    my $major = $luts->{major};
+    my $minor = $luts->{minor};
+    
+    my $num_maj = scalar @$major; # Should always be 0x1100
+    my $num_min = scalar @$minor; # Will vary based on LUT
+    my $bits_maj = get_bitwidth max(@$major);
+    my $bits_min = get_bitwidth max(@$minor);
+    my $type_maj = "uint${bits_maj}_t";
+    my $type_min = "uint${bits_min}_t";
+    
+    my $size_maj = $bits_maj / 8 * $num_maj;
+    my $size_min = $bits_min / 8 * $num_min;
+    my $size_tot = $size_maj + $size_min;
+    my $fmt_tot = format_bytes($size_tot);
+    
+    if ( defined($tref) ) {
+        $$tref += $size_tot;
+    }
+    
+    # U+00D7 = \times
+    return sprintf "%4d \x{00D7} $type_maj + %5d \x{00D7} $type_min = %9s",
+        $num_maj,
+        $num_min,
+        $fmt_tot;
+}
+
 
 # Writes a C enum's definition (to stdout) for the given list of values, in
 # order, starting at 1.
@@ -287,8 +371,8 @@ sub write_c_enum {
         my $index = $i + 1;
         say STDOUT "    ${prefix}_${vname} = $index,";
     }
-    # NUM_PROPS needs to be +1 since we added an extra one space OTHER
-    say STDOUT "    NUM_${prefix}S = " . (scalar @$values) + 1;
+    # NUM_PROPS needs to be +1 since we added an extra one variant for 'OTHER'
+    say STDOUT "    NUM_${prefix}S = " . ((scalar @$values) + 1);
     say STDOUT "} ${enum_name}_t;";
     say STDOUT "";
 }
@@ -299,18 +383,19 @@ sub write_c_array {
     my $values     = shift or die "Missing \$values argument";
     my $array_name = shift or die "Missing \$array_name argument";
     
-    my $maxval = max(@$values);
-    my $dtype = get_ctype $maxval;
-    my $maxwidth = length sprintf "%d", $maxval;
+    my $maxval = max @$values;
+    my $bitsize = get_bitwidth $maxval;
+    my $datatype = "uint${bitsize}_t";
+    my $maxwidth = length sprintf("%d", $maxval);
     
     # Fit as many of these values on a line as we can within a reasonable
     # limit (16, or 32 if it fits under 80 chars, or 48, etc so on).
     my $line_length = 16;
-    while (  ($maxwidth + 1) * $line_length < 80 ) {
+    while ( ($maxwidth + 1) * $line_length < 80 ) {
         $line_length += 16;
     }
     
-    say STDOUT "$dtype ${array_name}[] = {";
+    say STDOUT "$datatype ${array_name}[] = {";
     my $l = 0;
     for my $i (0 .. $#$values) {
         my $val = $values->[$i];
@@ -329,28 +414,44 @@ sub write_c_array {
 }
 
 
+# ============================================================================== 
+# Main script start
+# ==============================================================================
+
+
 say STDERR "=> Reading properties from files...";
-my $wb_props = read_break_props "${FindBin::Bin}/data/WordBreakProperty.txt";
-my $gb_props = read_break_props "${FindBin::Bin}/data/GraphemeBreakProperty.txt";
+
+my $gb_props = read_prop_values "${FindBin::Bin}/data/GraphemeBreakProperty.txt";
+say STDERR "==> Done reading GraphemeBreakProperty.txt";
+
 my $extpicto = find_boolean_props "${FindBin::Bin}/data/emoji-data.txt", "Extended_Pictographic";
+say STDERR "==> Done reading Extended_Pictographic from emoji-data.txt";
+
+my $in_props = read_prop_values "${FindBin::Bin}/data/DerivedCoreProperties.txt", "InCB";
+say STDERR "==> Done reading InCB (Indic_Conjunct_Break) from DerivedCoreProperties.txt";
+
+my $wb_props = read_prop_values "${FindBin::Bin}/data/WordBreakProperty.txt";
+say STDERR "==> Done reading WordBreakProperty.txt";
 
 =pod
 print Data::Dumper->Dump([
     $wb_props,
     $gb_props,
     $extpicto,
-], [qw(*wb_props *gb_props, *extpicto)]);
+    $in_props,
+], [qw(*wb_props *gb_props *extpicto *in_props)]);
+# exit;
 =cut
 
-say STDERR "=> Generating lookup tables (LUTs)...";
-my $wb_luts = generate_luts $wb_props->{cp_values}; say STDERR "==> Done WordBreak LUT.";
-my $gb_luts = generate_luts $gb_props->{cp_values}; say STDERR "==> Done GraphemeBreak LUT.";
-my $ep_luts = generate_luts $extpicto, 'skip';      say STDERR "==> Done Extended_Pictographic LUT.";
+say STDERR "=> Generating lookup tables (LUTs) for 1,114,112 codepoints...";
 
-say STDERR "==> Done LUTs. Encoded 1,114,112 codepoints in:";
-say STDERR "===>             WordBreak: " . measure_luts $wb_luts;
-say STDERR "===>         GraphemeBreak: " . measure_luts $gb_luts;
-say STDERR "===> Extended_Pictographic: " . measure_luts $ep_luts;
+my $total_bytes = 0;
+
+my $gb_luts = generate_luts $gb_props->{cp_values}; say STDERR "==> Done GraphemeBreak LUTs:         " . measure_luts $gb_luts, \$total_bytes;
+my $ep_luts = generate_luts $extpicto, 'skip';      say STDERR "==> Done Extended_Pictographic LUTs: " . measure_luts $ep_luts, \$total_bytes;
+my $in_luts = generate_luts $in_props->{cp_values}; say STDERR "==> Done Indic_Conjunct_Break LUTs:  " . measure_luts $in_luts, \$total_bytes;
+my $wb_luts = generate_luts $wb_props->{cp_values}; say STDERR "==> Done WordBreak LUTs:             " . measure_luts $wb_luts, \$total_bytes;
+say STDERR "=> Done LUTs. Total size: " . format_bytes($total_bytes);
 
 say STDERR "=> Writing output to stdout...";
 
@@ -359,6 +460,7 @@ say STDOUT "#include <stdint.h>\n";
 
 write_c_enum $wb_props->{val_names}, "word_break_prop";
 write_c_enum $gb_props->{val_names}, "grapheme_break_prop";
+write_c_enum $in_props->{val_names}, "indic_conjunct_break_prop", "NONE";
 
 write_c_array $wb_luts->{major}, "word_break_major";
 write_c_array $wb_luts->{minor}, "word_break_minor";
@@ -369,5 +471,7 @@ write_c_array $gb_luts->{minor}, "grapheme_break_minor";
 write_c_array $ep_luts->{major}, "extended_pictographic_major";
 write_c_array $ep_luts->{minor}, "extended_pictographic_minor";
 
-say STDERR "Done!";
+write_c_array $in_luts->{major}, "indic_conjunct_break_major";
+write_c_array $in_luts->{minor}, "indic_conjunct_break_minor";
 
+say STDERR "Done!";
